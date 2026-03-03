@@ -3,3 +3,266 @@ title: "bapq initial stuff"
 output: html_document
 ---
 
+---
+title: "BAPQ"
+output: html_document
+date: "2026-02-17"
+---
+
+```{r script settings and resources, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) #can i delete this or will it kill my code?
+library(tidyverse)
+library(dplyr)
+library(plyr)
+library(patchwork)
+
+data_dir <- "G:/My Drive/Mouse data spring 2026/data"
+file_list <- list.files(
+  path = data_dir,
+  pattern = "\\.csv$",
+  full.names = TRUE
+  )
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r data import and cleaning}
+#i fink that this stuff is all necessary but i commented out the write.csv code because i like my csv files as is >:(
+master_df <- lapply(file_list, read_csv, show_col_types = FALSE) %>%
+  bind_rows()
+master_df <- master_df %>%
+  select(!c(internal_node_id, participantCode, trial_type, subject, success)) %>%
+  filter(!is.na(test_part)) #separating by test part
+bandit_master <- read.csv("G:/My Drive/Mouse data spring 2026/master_df.csv") %>%
+  mutate(key_press = factor(key_press, levels = c("37", "38", "39"))) #recoding key press
+bandit_master <- bandit_master %>%
+  mutate(
+    #chance = rowMeans(across(c(leftProb, midProb, rightProb))), 
+    outcome = as.integer(correct), 
+    stay = as.integer(key_press == lag(key_press)), 
+    chosen_prob = case_when(
+    key_press == "37" ~ leftProb,
+    key_press == "38" ~ midProb,
+    key_press == "39" ~ rightProb,
+  ),
+  best_choice = case_when(
+    chosen_prob == pmax(leftProb, midProb, rightProb) ~ 1,
+    chosen_prob != pmax(leftProb, midProb, rightProb) ~ 0
+  ))#doing some calculations of probabilities 
+master_df <- master_df %>% mutate_at('rt', as.numeric) #fixing the RT variable from the master_df (individual scores, not means) file
+bandit_master <- bandit_master %>%
+  group_by(qualtrics_rid, test_part)%>%
+  summarise(
+    pReward = mean(outcome),
+    pChance = mean(chance),
+    reward_minus_chance = pReward - pChance,
+    pBest = mean(best_choice)
+  )
+
+```
+
+## Checking normality
+
+You can also embed plots, for example:
+
+```{r choice bias, echo=FALSE}
+master_df %>%
+  filter(test_part == "restless") %>%
+  mutate(qualtrics_rid = factor(qualtrics_rid)) %>%
+  group_by(qualtrics_rid, key_press) %>%
+  summarise(n = n()) %>%
+  View()
+
+choice_wide <- master_df %>%
+  count(qualtrics_rid, test_part, key_press) %>%
+  group_by(qualtrics_rid, test_part) %>%
+  mutate(prop = n / sum(n)) %>%
+  select(-n) %>%
+  pivot_wider(
+    names_from = key_press,
+    values_from = prop,
+    values_fill = 0,
+    names_prefix = "p_"
+  ) %>%
+  rename(
+    p_left   = p_37,
+    p_center = p_38,
+    p_right  = p_39
+  )
+
+#choice bias plot <- save this later
+# restless_choice_bias <- choice_wide %>%
+#   filter(test_part == "restless") %>%
+#   group_by(qualtrics_rid) %>%
+#   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
+#   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("restless_choice_bias")
+# 
+# spatial_choice_bias <- choice_wide %>%
+#   filter(test_part == "spatial") %>%
+#   group_by(qualtrics_rid) %>%
+#   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
+#   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("spatial_choice_bias")
+# 
+# vis1_choice_bias <- choice_wide %>%
+#   filter(test_part == "vis1") %>%
+#   group_by(qualtrics_rid) %>%
+#   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
+#   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("vis1_choice_bias")
+# 
+# vis2_choice_bias <- choice_wide %>%
+#   filter(test_part == "vis2") %>%
+#   group_by(qualtrics_rid) %>%
+#   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
+#   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("vis2_choice_bias")
+# 
+# restless_choice_bias + spatial_choice_bias + vis1_choice_bias + vis2_choice_bias
+####^^^ slower way of doing this
+choice_wide %>%
+  #filter(test_part == "vis1") %>%
+  group_by(qualtrics_rid) %>%
+  mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
+  ggplot(aes(max_bias)) + geom_histogram() + ggtitle("choice_bias") + facet_wrap(~ test_part)
+```
+choice bias overall demonstrates a relatively "normal" distribution of side biases, with spatial having the greatest tail (expected), so it doesn't seem like this is going to be a significant problem. it might be a significant problem though, we'll have to cross reference with reaction times though
+
+```{r pReward}
+#preward by test_part
+mu <- ddply(bandit_master, "test_part", summarise, grp.mean=mean(pReward))
+
+ggplot(bandit_master, aes(x=pReward)) + geom_histogram(binwidth = ) + facet_grid(test_part ~.) + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("pReward Distribution") 
+
+#checking normality
+
+shapiro.test(bandit_master$pReward) #pReward is not normally distributed. p = 0.03835, w = 0.9933
+
+results <- group_by(bandit_master, test_part)
+head(results)
+shapiro.test(results$pReward)
+
+bandit_master <- bandit_master %>%
+  mutate(test_part = factor(test_part))
+
+bandit_master %>%
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(pReward)$statistic,
+            p = shapiro.test(pReward)$p.value) #normal! w = .9881, p = 0.4062
+
+bandit_master %>%
+  filter(test_part == "spatial") %>%
+  summarise(W =  shapiro.test(pReward)$statistic,
+            p = shapiro.test(pReward)$p.value) #normal! w = .9876, p = .3735
+
+bandit_master %>%
+  filter(test_part == "vis1") %>%
+  summarise(W =  shapiro.test(pReward)$statistic,
+            p = shapiro.test(pReward)$p.value) #not normal w = .9742 p = 0.0246
+
+bandit_master %>%
+  filter(test_part == "vis2") %>%
+  summarise(W =  shapiro.test(pReward)$statistic,
+            p = shapiro.test(pReward)$p.value) #normal! w = 0.9846, p = 0.2093
+```
+not normally distributed overall. What about by test_part -> outlier is vis1 who is not normal, everyone else has normal pReward
+
+```{r pChance}
+mu <- ddply(bandit_master, "test_part", summarise, grp.mean=mean(pChance))
+
+ggplot(bandit_master, aes(x=pChance)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("pChance Distribution")
+
+#um i guess i'll do a shapiro-wilk on restless since the rest of them are apparently unimodal with one value.
+bandit_master %>%
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(pChance)$statistic,
+            p = shapiro.test(pChance)$p.value) #normally distributed. w=0.9905 p=0.6078
+
+```
+
+this is correct for chance
+
+```{r reward_minus_chance}
+mu <- ddply(bandit_master, "test_part", summarise, grp.mean=mean(reward_minus_chance))
+
+ggplot(bandit_master, aes(x=reward_minus_chance)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("reward_minus_chance Distribution")
+
+bandit_master %>%
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(reward_minus_chance)$statistic,
+            p = shapiro.test(reward_minus_chance)$p.value) #normal w=0.9817 p=0.1140
+
+bandit_master %>%
+  filter(test_part == "spatial") %>%
+  summarise(W =  shapiro.test(reward_minus_chance)$statistic,
+            p = shapiro.test(reward_minus_chance)$p.value) #normal w=0.9876 p=0.3735
+
+bandit_master %>%
+  filter(test_part == "vis1") %>%
+  summarise(W =  shapiro.test(reward_minus_chance)$statistic,
+            p = shapiro.test(reward_minus_chance)$p.value) #not normal w=0.9742 p=0.0246
+
+bandit_master %>%
+  filter(test_part == "vis2") %>%
+  summarise(W =  shapiro.test(reward_minus_chance)$statistic,
+            p = shapiro.test(reward_minus_chance)$p.value) #normal w=0.9846 p=0.2093
+```
+normality here tracks since the pReward values were not normal (a-normal?) for vis1
+
+```{r pBest}
+mu <- ddply(bandit_master, "test_part", summarise, grp.mean=mean(pBest))
+
+ggplot(bandit_master, aes(x=pBest)) + geom_histogram()  + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("pBest Distribution")
+
+
+bandit_master %>%
+  filter(test_part == "vis2") %>%
+  group_by(qualtrics_rid) %>%
+  ggplot(aes(x=pBest)) + geom_histogram()
+  
+  
+bandit_master %>%
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #normal w=0.9891 p=0.4828
+bandit_master %>%
+  filter(test_part == "spatial") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #NOT normal like at all like so incredibly not normal w=0.9440 p=0.0001
+bandit_master %>%
+  filter(test_part == "vis1") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #wow it gets worse w=0.8651 p=7.2188 x10^-9
+bandit_master %>%
+  filter(test_part == "vis2") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #not normal w=0.8863 p=6.2295x10^-8
+```
+
+```{r RT}
+mu <- ddply(master_df, "test_part", summarise, grp.mean=mean(rt)) 
+
+ggplot(master_df, aes(x=rt)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("rt Distribution")
+
+master_df %>%
+  filter(rt <= 5000) %>%
+  ggplot(aes(x=rt)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("rt Distribution")
+
+#per participant
+
+bandit_master %>%
+  mutate(qualtrics_rid = factor(qualtrics_rid)) %>%
+  dplyr::group_by(test_part) %>%
+  summarise(meanRT = mean(rt)) %>%
+  View()
+
+bandit_master %>%
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #normal w=
+
+```
+YAY i love following tutorials online i will be linking this one here bc omg thank you internet https://stat212-learnr.stat.illinois.edu/L5.1_dplyr_introduction/#section-plotting-within-a-pipe i hate u university of illinois but ur stat department is locked in
+
+
