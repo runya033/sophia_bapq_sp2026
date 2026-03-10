@@ -1,47 +1,50 @@
 ---
 title: "bapq initial stuff"
 output: html_document
+date: "2026-03-10"
 ---
 
----
-title: "BAPQ"
-output: html_document
-date: "2026-02-17"
----
+this is the clean(er) version of initial data related stuff for the performance data of the BAPQ project. The goal here is to clean the data and check the normality of said data, then we want to figure out where to cut out data for being erroneously bad due to quality of REP pool. 
 
 ```{r script settings and resources, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE) #can i delete this or will it kill my code?
+knitr::opts_chunk$set(echo = TRUE) 
 library(tidyverse)
 library(dplyr)
 library(plyr)
 library(patchwork)
 
-data_dir <- "G:/My Drive/Mouse data spring 2026/data"
-file_list <- list.files(
-  path = data_dir,
-  pattern = "\\.csv$",
-  full.names = TRUE
-  )
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+master_df <- read.csv("data/master_df.csv")
+#write.csv(master_df, "data/master_df.csv")
 ```
 
 ## R Markdown
+all of the below chunk are from previous versions of datasheets before they were initially cleaned. 
+```{r OLD data import and cleaning}
+# data_dir <- "C:/Users/sophi/OneDrive/Documents/sophia_bapq_sp2026/data"
+# file_list <- list.files( #i think we still need this definition because otherwise the later code breaks 
+#   path = data_dir,
+#   pattern = "\\.csv$",
+#   full.names = TRUE)
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+#master_df <- lapply(file_list, read_csv, show_col_types = FALSE) %>%
+  #bind_rows()
+#master_df <- master_df %>%
+  #select(!c(internal_node_id, participantCode, trial_type, subject, success)) %>%
+  #filter(!is.na(test_part)) #separating by test part
+#this is all from the first version 
+```
 
+In this section there are two big issues that we ran across. 1) chance not calculating because it doesn't like the "across" command and 2) that meaning we can't independently calculate reward_minus_chance. Before, I was able to fudge it because I had a previous version of the dataset that wasn't contaminated by this error, but this will make most of the plot code unusable until we can fix it :(
 ```{r data import and cleaning}
-#i fink that this stuff is all necessary but i commented out the write.csv code because i like my csv files as is >:(
-master_df <- lapply(file_list, read_csv, show_col_types = FALSE) %>%
-  bind_rows()
-master_df <- master_df %>%
-  select(!c(internal_node_id, participantCode, trial_type, subject, success)) %>%
-  filter(!is.na(test_part)) #separating by test part
-bandit_master <- read.csv("G:/My Drive/Mouse data spring 2026/master_df.csv") %>%
+bandit_master <- master_df %>%
   mutate(key_press = factor(key_press, levels = c("37", "38", "39"))) #recoding key press
+
 bandit_master <- bandit_master %>%
   mutate(
     #chance = rowMeans(across(c(leftProb, midProb, rightProb))), 
+    ##this part is not working for us, output states that we need to have it inside of a mutate command, which it is, and we couldn't get it to work last week :()
     outcome = as.integer(correct), 
     stay = as.integer(key_press == lag(key_press)), 
     chosen_prob = case_when(
@@ -53,21 +56,27 @@ bandit_master <- bandit_master %>%
     chosen_prob == pmax(leftProb, midProb, rightProb) ~ 1,
     chosen_prob != pmax(leftProb, midProb, rightProb) ~ 0
   ))#doing some calculations of probabilities 
-master_df <- master_df %>% mutate_at('rt', as.numeric) #fixing the RT variable from the master_df (individual scores, not means) file
+
+master_df <- master_df %>% 
+  mutate_at('rt', as.numeric) #fixing the RT variable from the master_df (individual scores, not means) file
+
 bandit_master <- bandit_master %>%
   group_by(qualtrics_rid, test_part)%>%
   summarise(
     pReward = mean(outcome),
-    pChance = mean(chance),
-    reward_minus_chance = pReward - pChance,
+    #pChance = mean(chance), ###this part doesn't work because of the above error
+    #reward_minus_chance = pReward - pChance,
     pBest = mean(best_choice)
-  )
+  ) #somewhere in here because I've commented things out, bandit_master becomes one observation of two variables which, although funny, means the rest of the code doesn't work. I think the main thing is getting this stupid choice code to stop breaking :(
 
 ```
 
 ## Checking normality
 
 You can also embed plots, for example:
+
+
+Choice Bias DOES NOT WORK due to above error. Here is the description I wrote of distributions earlier: choice bias overall demonstrates a relatively "normal" distribution of side biases, with spatial having the greatest tail (expected), so it doesn't seem like this is going to be a significant problem. it might be a significant problem though, we'll have to cross reference with reaction times though
 
 ```{r choice bias, echo=FALSE}
 master_df %>%
@@ -94,40 +103,13 @@ choice_wide <- master_df %>%
     p_right  = p_39
   )
 
-#choice bias plot <- save this later
-# restless_choice_bias <- choice_wide %>%
-#   filter(test_part == "restless") %>%
-#   group_by(qualtrics_rid) %>%
-#   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
-#   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("restless_choice_bias")
-# 
-# spatial_choice_bias <- choice_wide %>%
-#   filter(test_part == "spatial") %>%
-#   group_by(qualtrics_rid) %>%
-#   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
-#   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("spatial_choice_bias")
-# 
-# vis1_choice_bias <- choice_wide %>%
-#   filter(test_part == "vis1") %>%
-#   group_by(qualtrics_rid) %>%
-#   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
-#   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("vis1_choice_bias")
-# 
-# vis2_choice_bias <- choice_wide %>%
-#   filter(test_part == "vis2") %>%
-#   group_by(qualtrics_rid) %>%
-#   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
-#   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("vis2_choice_bias")
-# 
-# restless_choice_bias + spatial_choice_bias + vis1_choice_bias + vis2_choice_bias
-####^^^ slower way of doing this
 choice_wide %>%
   #filter(test_part == "vis1") %>%
   group_by(qualtrics_rid) %>%
   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("choice_bias") + facet_wrap(~ test_part)
 ```
-choice bias overall demonstrates a relatively "normal" distribution of side biases, with spatial having the greatest tail (expected), so it doesn't seem like this is going to be a significant problem. it might be a significant problem though, we'll have to cross reference with reaction times though
+
 
 ```{r pReward}
 #preward by test_part
@@ -166,7 +148,7 @@ bandit_master %>%
   summarise(W =  shapiro.test(pReward)$statistic,
             p = shapiro.test(pReward)$p.value) #normal! w = 0.9846, p = 0.2093
 ```
-not normally distributed overall. What about by test_part -> outlier is vis1 who is not normal, everyone else has normal pReward
+outlier is vis1 who is not normal, everyone else has normal pReward
 
 ```{r pChance}
 mu <- ddply(bandit_master, "test_part", summarise, grp.mean=mean(pChance))
