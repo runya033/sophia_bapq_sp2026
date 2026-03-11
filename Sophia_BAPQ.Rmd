@@ -1,0 +1,234 @@
+---
+title: "bapq initial stuff"
+output: html_document
+date: "2026-03-10"
+---
+
+this is the clean(er) version of initial data related stuff for the performance data of the BAPQ project. The goal here is to clean the data and check the normality of said data, then we want to figure out where to cut out data for being erroneously bad due to quality of REP pool. 
+
+```{r script settings and resources, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) 
+library(tidyverse)
+library(patchwork)
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+master_df <- read.csv("../REP/sophia_master.csv")
+#write.csv(master_df, "data/master_df.csv")
+```
+
+## R Markdown
+all of the below chunk are from previous versions of datasheets before they were initially cleaned. 
+```{r OLD data import and cleaning}
+# data_dir <- "C:/Users/sophi/OneDrive/Documents/sophia_bapq_sp2026/data"
+# file_list <- list.files( #i think we still need this definition because otherwise the later code breaks 
+#   path = data_dir,
+#   pattern = "\\.csv$",
+#   full.names = TRUE)
+
+
+#master_df <- lapply(file_list, read_csv, show_col_types = FALSE) %>%
+  #bind_rows()
+#master_df <- master_df %>%
+  #select(!c(internal_node_id, participantCode, trial_type, subject, success)) %>%
+  #filter(!is.na(test_part)) #separating by test part
+#this is all from the first version 
+```
+
+In this section there are two big issues that we ran across. 1) chance not calculating because it doesn't like the "across" command and 2) that meaning we can't independently calculate reward_minus_chance. Before, I was able to fudge it because I had a previous version of the dataset that wasn't contaminated by this error, but this will make most of the plot code unusable until we can fix it :(
+```{r data import and cleaning}
+bandit_master <- master_df %>%
+  mutate(key_press = factor(key_press, levels = c("37", "38", "39"))) #recoding key press
+
+bandit_master <- bandit_master %>%
+  mutate(
+    chance = rowMeans(across(c(leftProb, midProb, rightProb))),
+    outcome = as.integer(correct), 
+    stay = as.integer(key_press == lag(key_press)), 
+    rt = as.numeric(rt),
+    qualtrics_rid = factor(qualtrics_rid),
+    test_part = factor(test_part, levels = c("restless", "vis1", "vis2", "spatial")),
+    chosen_prob = case_when(
+    key_press == "37" ~ leftProb,
+    key_press == "38" ~ midProb,
+    key_press == "39" ~ rightProb,
+  ),
+  best_choice = case_when(
+    chosen_prob == pmax(leftProb, midProb, rightProb) ~ 1,
+    chosen_prob != pmax(leftProb, midProb, rightProb) ~ 0
+  ))#doing some calculations of probabilities 
+#
+
+# glimpse(bandit_master)
+
+
+bandit_summary <- bandit_master %>%
+  group_by(qualtrics_rid, test_part)%>%
+  summarise(
+    pReward = mean(outcome),
+    pChance = mean(chance), 
+    reward_minus_chance = pReward - pChance,
+    pBest = mean(best_choice)
+  )
+
+#somewhere in here because I've commented things out, bandit_master becomes one observation of two variables which, although funny, means the rest of the code doesn't work. I think the main thing is getting this stupid choice code to stop breaking :(
+
+```
+
+## Checking normality
+
+You can also embed plots, for example:
+
+
+Choice Bias DOES NOT WORK due to above error. Here is the description I wrote of distributions earlier: choice bias overall demonstrates a relatively "normal" distribution of side biases, with spatial having the greatest tail (expected), so it doesn't seem like this is going to be a significant problem. it might be a significant problem though, we'll have to cross reference with reaction times though
+
+```{r choice bias, echo=FALSE}
+# master_df %>%
+#   filter(test_part == "restless") %>%
+#   mutate(qualtrics_rid = factor(qualtrics_rid)) %>%
+#   group_by(qualtrics_rid, key_press) %>%
+#   summarise(n = n()) %>%
+#   View()
+
+choice_wide <- master_df %>%
+  count(qualtrics_rid, test_part, key_press) %>%
+  group_by(qualtrics_rid, test_part) %>%
+  mutate(prop = n / sum(n)) %>%
+  select(-n) %>%
+  pivot_wider(
+    names_from = key_press,
+    values_from = prop,
+    values_fill = 0,
+    names_prefix = "p_"
+  ) %>%
+  rename(
+    p_left   = p_37,
+    p_center = p_38,
+    p_right  = p_39
+  )
+
+choice_wide %>%
+  #filter(test_part == "vis1") %>%
+  group_by(qualtrics_rid) %>%
+  mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
+  ggplot(aes(max_bias)) + geom_histogram() + ggtitle("choice_bias") + facet_wrap(~ test_part)
+```
+
+
+```{r pReward}
+#preward by test_part
+mu_reward <- bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(grp.mean = mean(pReward, na.rm = TRUE), .groups = "drop")
+
+ggplot(bandit_summary, aes(x=pReward)) + geom_histogram(binwidth = ) + facet_grid(test_part ~.) + geom_vline(data=mu_reward, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("pReward Distribution") 
+
+#checking normality
+
+shapiro.test(bandit_summary$pReward) #pReward is not normally distributed. p = 0.03835, w = 0.9933
+
+
+bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(
+    W = shapiro.test(pReward)$statistic,
+    p = shapiro.test(pReward)$p.value,
+    .groups = "drop"
+  )
+
+```
+outlier is vis1 who is not normal, everyone else has normal pReward
+
+```{r pChance}
+mu_chance <- bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(grp.mean = mean(pChance, na.rm = TRUE), .groups = "drop")
+
+
+ggplot(bandit_summary, aes(x=pChance)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu_chance, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("pChance Distribution")
+
+#um i guess i'll do a shapiro-wilk on restless since the rest of them are apparently unimodal with one value.
+bandit_summary %>%
+  ungroup() %>%
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(pChance)$statistic,
+            p = shapiro.test(pChance)$p.value) #normally distributed. w=0.9905 p=0.6078
+
+```
+
+this is correct for chance
+
+```{r reward_minus_chance}
+mu_reward_minus_chance <- bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(grp.mean = mean(reward_minus_chance, na.rm = TRUE), .groups = "drop")
+
+
+ggplot(bandit_summary, aes(x=reward_minus_chance)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu_reward_minus_chance, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("reward_minus_chance Distribution")
+
+
+bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(
+    W = shapiro.test(reward_minus_chance)$statistic,
+    p = shapiro.test(reward_minus_chance)$p.value,
+    .groups = "drop"
+  )
+```
+normality here tracks since the pReward values were not normal (a-normal?) for vis1
+
+```{r pBest}
+mu <- ddply(bandit_master, "test_part", summarise, grp.mean=mean(pBest))
+
+ggplot(bandit_master, aes(x=pBest)) + geom_histogram()  + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("pBest Distribution")
+
+
+bandit_master %>%
+  filter(test_part == "vis2") %>%
+  group_by(qualtrics_rid) %>%
+  ggplot(aes(x=pBest)) + geom_histogram()
+  
+  
+bandit_master %>%
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #normal w=0.9891 p=0.4828
+bandit_master %>%
+  filter(test_part == "spatial") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #NOT normal like at all like so incredibly not normal w=0.9440 p=0.0001
+bandit_master %>%
+  filter(test_part == "vis1") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #wow it gets worse w=0.8651 p=7.2188 x10^-9
+bandit_master %>%
+  filter(test_part == "vis2") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #not normal w=0.8863 p=6.2295x10^-8
+```
+
+```{r RT}
+mu <- ddply(master_df, "test_part", summarise, grp.mean=mean(rt)) 
+
+ggplot(master_df, aes(x=rt)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("rt Distribution")
+
+master_df %>%
+  filter(rt <= 5000) %>%
+  ggplot(aes(x=rt)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("rt Distribution")
+
+#per participant
+
+bandit_master %>%
+  mutate(qualtrics_rid = factor(qualtrics_rid)) %>%
+  dplyr::group_by(test_part) %>%
+  summarise(meanRT = mean(rt)) %>%
+  View()
+
+bandit_master %>%
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(pBest)$statistic,
+            p = shapiro.test(pBest)$p.value) #normal w=
+
+```
+YAY i love following tutorials online i will be linking this one here bc omg thank you internet https://stat212-learnr.stat.illinois.edu/L5.1_dplyr_introduction/#section-plotting-within-a-pipe i hate u university of illinois but ur stat department is locked in
+
+
