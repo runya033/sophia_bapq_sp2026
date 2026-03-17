@@ -1,0 +1,494 @@
+---
+title: "bapq initial stuff"
+output: html_document
+date: "2026-03-10"
+---
+
+this is the clean(er) version of initial data related stuff for the performance data of the BAPQ project. The goal here is to clean the data and check the normality of said data, then we want to figure out where to cut out data for being erroneously bad due to quality of REP pool. 
+
+Trial by Trial, individual CSV -> bandit_master
+summary by session -> bandit_summary
+```{r script settings and resources, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) 
+library(tidyverse)
+library(patchwork)
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+master_df <- read.csv("G:/My Drive/Mouse data spring 2026/master_df.csv")
+#write.csv(master_df, "data/master_df.csv")
+```
+
+## R Markdown
+all of the below chunk are from previous versions of datasheets before they were initially cleaned. 
+```{r OLD data import and cleaning}
+# data_dir <- "C:/Users/sophi/OneDrive/Documents/sophia_bapq_sp2026/data"
+# file_list <- list.files( #i think we still need this definition because otherwise the later code breaks 
+#   path = data_dir,
+#   pattern = "\\.csv$",
+#   full.names = TRUE)
+
+
+#master_df <- lapply(file_list, read_csv, show_col_types = FALSE) %>%
+  #bind_rows()
+#master_df <- master_df %>%
+  #select(!c(internal_node_id, participantCode, trial_type, subject, success)) %>%
+  #filter(!is.na(test_part)) #separating by test part
+#this is all from the first version 
+```
+
+```{r data import and cleaning}
+bandit_master <- master_df %>%
+  mutate(key_press = factor(key_press, levels = c("37", "38", "39"))) #recoding key press
+
+bandit_master <- bandit_master %>%
+  mutate(
+    chance = rowMeans(across(c(leftProb, midProb, rightProb))),
+    outcome = as.integer(correct), 
+    stay = as.integer(key_press == lag(key_press)), 
+    rt = as.numeric(rt),
+    qualtrics_rid = factor(qualtrics_rid),
+    test_part = factor(test_part, levels = c("restless", "vis1", "vis2", "spatial")),
+    chosen_prob = case_when(
+    key_press == "37" ~ leftProb,
+    key_press == "38" ~ midProb,
+    key_press == "39" ~ rightProb,
+  ),
+  best_choice = case_when(
+    chosen_prob == pmax(leftProb, midProb, rightProb) ~ 1,
+    chosen_prob != pmax(leftProb, midProb, rightProb) ~ 0
+  ))#doing some calculations of probabilities 
+#
+
+# glimpse(bandit_master)
+
+
+bandit_summary <- bandit_master %>%
+  group_by(qualtrics_rid, test_part)%>%
+  summarise(
+    pReward = mean(outcome),
+    pChance = mean(chance), 
+    reward_minus_chance = pReward - pChance,
+    pBest = mean(best_choice)
+  )
+
+
+```
+
+## Checking normality
+
+You can also embed plots, for example:
+
+
+choice bias overall demonstrates a relatively "normal" distribution of side biases, with spatial having the greatest tail (expected), so it doesn't seem like this is going to be a significant problem. it might be a significant problem though, we'll have to cross reference with reaction times though
+
+```{r choice bias, echo=FALSE}
+# master_df %>%
+#   filter(test_part == "restless") %>%
+#   mutate(qualtrics_rid = factor(qualtrics_rid)) %>%
+#   group_by(qualtrics_rid, key_press) %>%
+#   summarise(n = n()) %>%
+#   View()
+
+choice_wide <- master_df %>%
+  count(qualtrics_rid, test_part, key_press) %>%
+  group_by(qualtrics_rid, test_part) %>%
+  mutate(prop = n / sum(n)) %>%
+  select(-n) %>%
+  pivot_wider(
+    names_from = key_press,
+    values_from = prop,
+    values_fill = 0,
+    names_prefix = "p_"
+  ) %>%
+  rename(
+    p_left   = p_37,
+    p_center = p_38,
+    p_right  = p_39
+  )
+
+choice_wide %>%
+  #filter(test_part == "vis1") %>%
+  group_by(qualtrics_rid) %>%
+  mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
+  ggplot(aes(max_bias)) + geom_histogram() + ggtitle("choice_bias") + facet_wrap(~ test_part)
+```
+
+
+```{r pReward}
+#preward by test_part
+mu_reward <- bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(grp.mean = mean(pReward, na.rm = TRUE), .groups = "drop")
+
+ggplot(bandit_summary, aes(x=pReward)) + geom_histogram(binwidth = ) + facet_grid(test_part ~.) + geom_vline(data=mu_reward, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("pReward Distribution") 
+
+#checking normality
+
+shapiro.test(bandit_summary$pReward) #pReward is not normally distributed. p = 0.03835, w = 0.9933
+
+
+bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(
+    W = shapiro.test(pReward)$statistic,
+    p = shapiro.test(pReward)$p.value,
+    .groups = "drop"
+  )
+
+```
+outlier is vis1 who is not normal, everyone else has normal pReward
+
+```{r pChance}
+mu_chance <- bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(grp.mean = mean(pChance, na.rm = TRUE), .groups = "drop")
+
+
+ggplot(bandit_summary, aes(x=pChance)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu_chance, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("pChance Distribution")
+
+#um i guess i'll do a shapiro-wilk on restless since the rest of them are apparently unimodal with one value.
+bandit_summary %>%
+  ungroup() %>%
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(pChance)$statistic,
+            p = shapiro.test(pChance)$p.value) #normally distributed. w=0.9905 p=0.6078
+
+```
+
+this is correct for chance
+
+```{r reward_minus_chance}
+mu_reward_minus_chance <- bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(grp.mean = mean(reward_minus_chance, na.rm = TRUE), .groups = "drop")
+
+
+ggplot(bandit_summary, aes(x=reward_minus_chance)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu_reward_minus_chance, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("reward_minus_chance Distribution")
+
+
+bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(
+    W = shapiro.test(reward_minus_chance)$statistic,
+    p = shapiro.test(reward_minus_chance)$p.value,
+    .groups = "drop"
+  )
+```
+normality here tracks since the pReward values were not normal (a-normal?) for vis1
+
+```{r pBest}
+mu_pBest <- bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(grp.mean = mean(pBest, na.rm = TRUE), .groups = "drop")
+
+ggplot(bandit_summary, aes(x=pBest)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu_pBest, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("pBest Distribution")
+  
+bandit_summary %>%
+  group_by(test_part) %>%
+  summarise(
+    W = shapiro.test(pBest)$statistic,
+    p = shapiro.test(pBest)$p.value,
+    .groups = "drop"
+  )
+```
+
+```{r RT}
+mu_RT <- bandit_master %>%
+  group_by(test_part) %>%
+  summarise(grp.mean = mean(rt, na.rm = TRUE), .groups = "drop")
+
+
+bandit_master %>%
+  filter(rt <= 5000) %>%
+  ggplot(aes(x=rt)) + geom_histogram() + facet_grid(test_part ~.) + geom_vline(data=mu, aes(xintercept=grp.mean, color="red"),linetype="dashed") +  ggtitle("rt Distribution")
+
+#per participant
+
+bandit_master %>%
+  mutate(qualtrics_rid = factor(qualtrics_rid)) %>%
+  dplyr::group_by(test_part) %>%
+  summarise(meanRT = mean(rt)) %>%
+  View()
+
+bandit_master %>% #this doesn't work because sample size must be between 3 - 5000, we have sample of like 40600 approx. help
+  filter(test_part == "restless") %>%
+  summarise(W =  shapiro.test(rt)$statistic,
+            p = shapiro.test(rt)$p.value) #normal w=
+
+```
+YAY i love following tutorials online i will be linking this one here bc omg thank you internet https://stat212-learnr.stat.illinois.edu/L5.1_dplyr_introduction/#section-plotting-within-a-pipe i hate u university of illinois but ur stat department is locked in
+''''''''''''''''''''''''''''''''''''''''''''''''
+Trying to do some quality control with the reaction time variable <- copied from evan's rep_qc.rmd
+''''''''''''''''''''''''''''''''''''''''''''''''
+
+```{r Recalculating trial level variables}
+rep_trial <- master_df %>%
+  arrange(qualtrics_rid, trial_index) %>%
+  group_by(qualtrics_rid) %>%
+  mutate(
+    stay = ifelse(key_press == lag(key_press), 1, 0),
+    prev_outcome = lag(correct),
+    win_stay = ifelse(prev_outcome == 1 & stay == 1, 1, 0),
+    lose_shift = ifelse(prev_outcome == 0 & stay == 0, 1, 0)
+  ) %>%
+  ungroup()
+```
+
+
+# Step 2: Participant-Level Summary
+
+```{r participant-summary}
+rep_summary <- rep_trial %>%
+  group_by(qualtrics_rid) %>%
+  summarise(
+    mean_rt = mean(rt, na.rm = TRUE),
+    sd_rt = sd(rt, na.rm = TRUE),
+
+    # P(stay | previous trial was win)
+    win_stay_rate =
+      mean(stay[prev_outcome == 1], na.rm = TRUE),
+
+    # P(shift | previous trial was loss)
+    lose_shift_rate =
+      mean((stay == 0)[prev_outcome == 0], na.rm = TRUE),
+
+    overall_switch_rate =
+      mean(stay == 0, na.rm = TRUE),
+
+    n_trials = n(),
+    .groups = "drop"
+  )
+
+head(rep_summary)
+```
+
+---
+
+# Step 3: Reaction Time Outlier Detection
+
+```{r rt-outliers}
+grand_mean_rt <- mean(rep_summary$mean_rt)
+grand_sd_rt   <- sd(rep_summary$mean_rt)
+
+rep_summary <- rep_summary %>%
+  mutate(
+    rt_outlier =
+      abs(mean_rt - grand_mean_rt) > 2 * grand_sd_rt
+  )
+```
+
+## RT Distribution
+
+```{r plot-rt}
+ggplot(rep_summary, aes(x = mean_rt)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = grand_mean_rt, color = "red") +
+  theme_classic() +
+  labs(title = "Mean RT Distribution",
+       x = "Mean RT",
+       y = "Count")
+```
+
+---
+
+# Step 4: Low Win-Stay Detection (< 0.5)
+
+```{r low-win-stay}
+rep_summary <- rep_summary %>%
+  mutate(
+    low_win_stay = win_stay_rate < 0.5
+  )
+```
+
+## Win-Stay Distribution
+
+```{r plot-win-stay}
+ggplot(rep_summary, aes(x = win_stay_rate)) +
+  geom_histogram(bins = 30, fill = "darkgreen", alpha = 0.7) +
+  geom_vline(xintercept = 0.5, color = "red") +
+  theme_classic() +
+  labs(title = "Win-Stay Rate Distribution",
+       x = "Win-Stay Rate",
+       y = "Count")
+```
+
+---
+
+# Step 5: Choice Bias Detection (> 70%)
+choice doesn't exist in rep_trial ? confusing me :( help
+```{r choice-bias}
+#need to make a choice variable, this is how we did it above but i am not positive that we should go for that here? if it is okay, then we just run the below i think?
+
+# choice_wide <- master_df %>%
+#   count(qualtrics_rid, test_part, key_press) %>%
+#   group_by(qualtrics_rid, test_part) %>%
+#   mutate(prop = n / sum(n)) %>%
+#   select(-n) %>%
+#   pivot_wider(
+#     names_from = key_press,
+#     values_from = prop,
+#     values_fill = 0,
+#     names_prefix = "p_"
+#   ) %>%
+#   rename(
+#     p_left   = p_37,
+#     p_center = p_38,
+#     p_right  = p_39
+#   )
+# 
+# choice_wide %>%
+#   #filter(test_part == "vis1") %>%
+#   group_by(qualtrics_rid) %>%
+#   mutate(max_bias = pmax(p_left, p_center, p_right)) %>%
+#   ggplot(aes(max_bias)) + geom_histogram() + ggtitle("choice_bias") + facet_wrap(~ test_part)
+
+choice_bias <- rep_trial %>%
+  group_by(qualtrics_rid, choice) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(qualtrics_rid) %>%
+  mutate(prop = n / sum(n)) %>%
+  summarise(
+    max_choice_prop = max(prop),
+    .groups = "drop"
+  )
+
+rep_summary <- rep_summary %>%
+  left_join(choice_bias, by = "participant_id") %>%
+  mutate(
+    high_choice_bias = max_choice_prop > 0.7
+  )
+```
+
+## Choice Bias Distribution
+
+```{r plot-choice-bias}
+ggplot(rep_summary, aes(x = max_choice_prop)) +
+  geom_histogram(bins = 30, fill = "purple", alpha = 0.7) +
+  geom_vline(xintercept = 0.7, color = "red") +
+  theme_classic() +
+  labs(title = "Maximum Choice Proportion",
+       x = "Proportion Choosing Most Frequent Option",
+       y = "Count")
+```
+
+---
+
+# Step 6: Extreme Switching Detection
+
+```{r extreme-switch}
+rep_summary <- rep_summary %>%
+  mutate(
+    extreme_switch =
+      overall_switch_rate < 0.1 |
+      overall_switch_rate > 0.9
+  )
+```
+
+## Switch Rate Distribution
+
+```{r plot-switch}
+ggplot(rep_summary, aes(x = overall_switch_rate)) +
+  geom_histogram(bins = 30, fill = "orange", alpha = 0.7) +
+  geom_vline(xintercept = c(0.1, 0.9), color = "red") +
+  theme_classic() +
+  labs(title = "Overall Switch Rate",
+       x = "Switch Rate",
+       y = "Count")
+```
+
+---
+
+# Step 7: Detect Simple Repeating Patterns
+this doesn't work because of the missing choice variable, as all below
+```{r repeating-pattern}
+rep_trial <- rep_trial %>%
+  group_by(qualtrics_rd) %>%
+  mutate(lag2 = lag(choice, 2)) %>%
+  ungroup()
+
+pattern_check <- rep_trial %>%
+  group_by(qualtrics_rid) %>%
+  summarise(
+    two_cycle_rate = mean(choice == lag2, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+rep_summary <- rep_summary %>%
+  left_join(pattern_check, by = "qualtrics_rid") %>%
+  mutate(
+    repeating_pattern = two_cycle_rate > 0.8
+  )
+```
+
+## Repeating Pattern Distribution
+
+```{r plot-pattern}
+ggplot(rep_summary, aes(x = two_cycle_rate)) +
+  geom_histogram(bins = 30, fill = "brown", alpha = 0.7) +
+  geom_vline(xintercept = 0.8, color = "red") +
+  theme_classic() +
+  labs(title = "Two-Cycle Repetition Rate",
+       x = "Proportion Matching 2-Trial Lag",
+       y = "Count")
+```
+
+---
+
+# Step 8: Combine All Flags
+
+```{r combine-flags}
+rep_summary <- rep_summary %>%
+  mutate(
+    exclude =
+      rt_outlier |
+      low_win_stay |
+      high_choice_bias |
+      extreme_switch |
+      repeating_pattern
+  )
+```
+
+---
+
+# Step 9: Exclusion Summary
+
+```{r exclusion-summary}
+rep_summary %>%
+  summarise(
+    total_participants = n(),
+    excluded = sum(exclude),
+    percent_excluded = mean(exclude) * 100
+  )
+```
+
+---
+
+# Step 10: Create Clean and Excluded Datasets
+
+```{r clean-datasets}
+rep_clean_ids <- rep_summary %>%
+  filter(!exclude) %>%
+  pull(participant_id)
+
+rep_clean <- rep_trial %>%
+  filter(participant_id %in% rep_clean_ids)
+
+rep_excluded <- rep_summary %>%
+  filter(exclude)
+
+head(rep_excluded)
+```
+
+---
+
+# Final Notes
+
+Participants are flagged if they:
+
+- Have extreme reaction times  
+- Do not use reward feedback  
+- Show strong single-option bias  
+- Rarely or always switch  
+- Follow a mechanical repeating pattern  
+
+Exclusion decisions should always be reviewed before final removal.
